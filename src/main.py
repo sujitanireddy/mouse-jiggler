@@ -4,93 +4,195 @@ import threading
 
 import pyautogui as pag
 from pynput import mouse
-
-# -------- behavior tuning --------
-USER_MOVE_THRESHOLD_PX = 10      # how far mouse must deviate to be considered "user"
-IGNORE_WINDOW_SEC = 0.35         # window after our move where movement is expected
-# ---------------------------------
-
-stop_event = threading.Event()
-expected_position = {"x": None, "y": None}
-ignore_until = {"t": 0.0}
+import pystray
+from PIL import Image, ImageDraw
 
 
-def request_stop(reason: str):
-    if not stop_event.is_set():
-        print(f"\nStopping: {reason}")
-        stop_event.set()
+# ---------------- Settings ----------------
+DEFAULT_COUNT = 10**9          # effectively "run forever" until a user interrupts 
+MOVE_DURATION = 0.15           # time it takes to move from one position to another
+DELAY_BETWEEN_MOVES = 0.1
+X_RANGE = (500, 1000)
+Y_RANGE = (200, 600)
+
+USER_MOVE_THRESHOLD_PX = 10
+IGNORE_WINDOW_SEC = 0.35
+# ------------------------------------------
 
 
-def on_move(x, y):
-    if stop_event.is_set():
+class MouseJigglerApp:
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.running = False
+        self.worker_thread = None
+
+        self.expected_position = {"x": None, "y": None}
+        self.ignore_until = {"t": 0.0}
+
+        self.listener = None
+        self.icon = None
+
+    # ---------- user-takeover detection ----------
+    def request_stop(self, reason: str):
+        if self.running:
+            print(f"Stopping: {reason}")
+        self.stop_event.set()
+        self.running = False
+        self.update_icon_title()
+
+    def on_move(self, x, y):
+        if self.stop_event.is_set():
+            return False
+
+        if time.time() < self.ignore_until["t"]:
+            return
+
+        ex, ey = self.expected_position["x"], self.expected_position["y"]
+        if ex is None or ey is None:
+            self.request_stop("Mouse moved by user.")
+            return False
+
+        if abs(x - ex) > USER_MOVE_THRESHOLD_PX or abs(y - ey) > USER_MOVE_THRESHOLD_PX:
+            self.request_stop("Mouse moved by user.")
+            return False
+
+    def on_click(self, x, y, button, pressed):
+        if pressed:
+            self.request_stop(f"Mouse click detected: {button}")
+            return False
+
+    def on_scroll(self, x, y, dx, dy):
+        self.request_stop("Mouse scroll detected.")
         return False
 
-    # If we just moved the mouse ourselves, ignore movement events briefly
-    if time.time() < ignore_until["t"]:
-        return
+    def start_listener(self):
+        if self.listener is None:
+            self.listener = mouse.Listener(
+                on_move=self.on_move,
+                on_click=self.on_click,
+                on_scroll=self.on_scroll,
+            )
+            self.listener.start()
 
-    ex, ey = expected_position["x"], expected_position["y"]
-    if ex is None or ey is None:
-        # If we haven't set an expected position yet, treat any move as user input
-        request_stop("Mouse moved by user.")
-        return False
+    def stop_listener(self):
+        if self.listener is not None:
+            try:
+                self.listener.stop()
+            except Exception:
+                pass
+            self.listener = None
 
-    # If cursor deviates from where we expect by more than threshold, user took over
-    if abs(x - ex) > USER_MOVE_THRESHOLD_PX or abs(y - ey) > USER_MOVE_THRESHOLD_PX:
-        request_stop("Mouse moved by user.")
-        return False
+    # ---------- jiggler worker ----------
+    def jiggle_loop(self):
+    
+        self.start_listener()
+        self.stop_event.clear()
+        self.running = True
+        self.update_icon_title()
 
+        try:
+            for _ in range(DEFAULT_COUNT):
+                if self.stop_event.is_set():
+                    break
 
-def on_click(x, y, button, pressed):
-    if pressed:
-        request_stop(f"Mouse click detected: {button}")
-        return False
+                x = random.randint(*X_RANGE)
+                y = random.randint(*Y_RANGE)
 
+                self.expected_position["x"] = x
+                self.expected_position["y"] = y
 
-def on_scroll(x, y, dx, dy):
-    request_stop("Mouse scroll detected.")
-    return False
+                self.ignore_until["t"] = time.time() + IGNORE_WINDOW_SEC
+                pag.moveTo(x, y, duration=MOVE_DURATION)
 
+                cx, cy = pag.position()
+                self.expected_position["x"], self.expected_position["y"] = cx, cy
 
-def start_mouse_listener():
-    listener = mouse.Listener(on_move=on_move, on_click=on_click, on_scroll=on_scroll)
-    listener.start()
-    return listener
+                if DELAY_BETWEEN_MOVES:
+                    time.sleep(DELAY_BETWEEN_MOVES)
 
+        except Exception as e:
+            self.request_stop(f"Unknown reason: {e}")
+            
+        finally:
+            self.running = False
+            self.stop_event.set()
+            self.stop_listener()
+            self.update_icon_title()
 
-def main():
-    # Extra safety: slam mouse to a corner to stop (PyAutoGUI throws exception)
-    pag.FAILSAFE = True
+    # ---------- tray actions ----------
+    def start(self, _icon=None, _item=None):
+        if self.running:
+            return
+        self.worker_thread = threading.Thread(target=self.jiggle_loop, daemon=True)
+        self.worker_thread.start()
 
-    listener = start_mouse_listener()
+    def stop(self, _icon=None, _item=None):
+        self.request_stop("Stopped from tray menu.")
 
-    try:
-        for _ in range(1000):
-            if stop_event.is_set():
-                break
+    def quit(self, icon, _item=None):
+        self.request_stop("Quitting app.")
+        time.sleep(0.1)
+        icon.stop()
 
-            x = random.randint(500, 1000)
-            y = random.randint(200, 600)
+    def update_icon_title(self):
+        if self.icon is not None:
+            self.icon.title = "Mouse Jiggler (Running)" if self.running else "Mouse Jiggler (Stopped)"
 
-            # Set what position we *expect* to be at after our move
-            expected_position["x"] = x
-            expected_position["y"] = y
+    # ---------- icon ----------
+    @staticmethod
+    def make_icon(size: int = 64):
+        """
+        Minimal white mouse with small jiggle lines.
+        Transparent background, suitable for pystray.
+        """
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
 
-            # Ignore listener events caused by our move for a brief window
-            ignore_until["t"] = time.time() + IGNORE_WINDOW_SEC
+        # Colors
+        white = (255, 255, 255, 255)
 
-            pag.moveTo(x, y, duration=0.2)
+        # --- Mouse body (simple rounded shape) ---
+        # Main body
+        body = (size*0.30, size*0.18, size*0.70, size*0.82)
+        d.rounded_rectangle(body, radius=int(size*0.18), outline=white, width=int(size*0.09))
 
-            # After move, refresh expected to current (sometimes OS slightly adjusts)
-            cx, cy = pag.position()
-            expected_position["x"], expected_position["y"] = cx, cy
+        # Scroll wheel line
+        d.line(
+            (size*0.50, size*0.28, size*0.50, size*0.42),
+            fill=white,
+            width=max(1, int(size*0.05))
+        )
 
-    except pag.FailSafeException:
-        request_stop("PyAutoGUI fail-safe triggered (moved to screen corner).")
-    finally:
-        stop_event.set()
-        listener.stop()
+        # Button split line (subtle)
+        d.line(
+            (size*0.50, size*0.18, size*0.50, size*0.28),
+            fill=white,
+            width=max(1, int(size*0.03))
+        )
+
+        # --- Jiggle lines (minimal) ---
+        w = max(1, int(size*0.05))
+        # left jiggle
+        d.arc((size*0.12, size*0.24, size*0.32, size*0.44), start=300, end=60, fill=white, width=w)
+        d.arc((size*0.08, size*0.18, size*0.34, size*0.50), start=300, end=60, fill=white, width=w)
+
+        # right jiggle
+        d.arc((size*0.68, size*0.24, size*0.88, size*0.44), start=120, end=240, fill=white, width=w)
+        d.arc((size*0.66, size*0.18, size*0.92, size*0.50), start=120, end=240, fill=white, width=w)
+
+        return img
+        
+
+    def run_tray(self):
+        menu = pystray.Menu(
+            pystray.MenuItem("Start", self.start),
+            pystray.MenuItem("Stop", self.stop),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", self.quit),
+        )
+        self.icon = pystray.Icon("mouse-jiggler", self.make_icon(), "Mouse Jiggler (Stopped)", menu)
+        self.icon.run()
 
 
 if __name__ == "__main__":
-    main()
+    MouseJigglerApp().run_tray()
