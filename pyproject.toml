@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pillow>=12.1.1",
     "pyautogui>=0.9.54",
+    "pyinstaller>=6.19.0",
     "pynput>=1.8.1",
     "pystray>=0.19.5",
 ]
