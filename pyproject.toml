@@ -1,7 +1,10 @@
 [project]
 name = "mouse-jiggler"
 version = "0.1.0"
-description = "Add your description here"
+description = "As the name suggests, this project jiggles your mouse using code"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pyautogui>=0.9.54",
+    "pynput>=1.8.1",
+]
