@@ -140,45 +140,85 @@ class MouseJigglerApp:
 
     # ---------- icon ----------
     @staticmethod
-    def make_icon(size: int = 64):
+    def make_icon(size: int = 64) -> Image.Image:
         """
-        Minimal white mouse with small jiggle lines.
-        Transparent background, suitable for pystray.
+        Thick-outline mouse icon (like your screenshot), transparent background.
+        Designed to look good when downscaled for tray/menubar icons.
         """
         img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
 
-        # Colors
         white = (255, 255, 255, 255)
 
-        # --- Mouse body (simple rounded shape) ---
-        # Main body
-        body = (size*0.30, size*0.18, size*0.70, size*0.82)
-        d.rounded_rectangle(body, radius=int(size*0.18), outline=white, width=int(size*0.09))
+        # Stroke thickness tuned for small tray sizes
+        stroke = max(2, int(size * 0.06))        # main outline thickness
+        thin = max(2, int(size * 0.06))          # inner details thickness
 
-        # Scroll wheel line
-        d.line(
-            (size*0.50, size*0.28, size*0.50, size*0.42),
-            fill=white,
-            width=max(1, int(size*0.05))
+        # Helper to make integer coords
+        def I(x): return int(round(x))
+
+        # ---------------------------
+        # Outer body (rounded mouse)
+        # ---------------------------
+        left   = size * 0.18
+        top    = size * 0.18
+        right  = size * 0.82
+        bottom = size * 0.92
+
+        body_bbox = (I(left), I(top), I(right), I(bottom))
+        radius = I(size * 0.34)
+
+        # Outer outline
+        d.rounded_rectangle(body_bbox, radius=radius, outline=white, width=stroke)
+
+        # ----------------------------------------
+        # Inner "arch" (top chamber outline)
+        # ----------------------------------------
+        # Draw an arc that sits inside the outer body
+        pad = size * 0.09
+        arch_bbox = (
+            I(left + pad),
+            I(top + pad * 0.55),
+            I(right - pad),
+            I(top + (bottom - top) * 0.55),
         )
+        # top semi-ellipse
+        d.arc(arch_bbox, start=180, end=0, fill=white, width=thin)
 
-        # Button split line (subtle)
-        d.line(
-            (size*0.50, size*0.18, size*0.50, size*0.28),
-            fill=white,
-            width=max(1, int(size*0.03))
+        # Vertical sides of the arch down to the mid line (to match your icon)
+        arch_left_x  = arch_bbox[0]
+        arch_right_x = arch_bbox[2]
+        arch_base_y  = arch_bbox[3]
+        mid_y = I(top + (bottom - top) * 0.52)
+
+        d.line((arch_left_x,  arch_base_y, arch_left_x,  mid_y), fill=white, width=thin)
+        d.line((arch_right_x, arch_base_y, arch_right_x, mid_y), fill=white, width=thin)
+
+        # ---------------------------
+        # Middle horizontal divider
+        # ---------------------------
+        d.line((I(left + pad * 0.55), mid_y, I(right - pad * 0.55), mid_y), fill=white, width=stroke)
+
+        # ---------------------------
+        # Center stem + wheel capsule
+        # ---------------------------
+        cx = size * 0.50
+
+        # Stem from near top down into arch
+        stem_top = top + size * 0.05
+        stem_bottom = top + (bottom - top) * 0.50
+        d.line((I(cx), I(stem_top), I(cx), I(stem_bottom)), fill=white, width=stroke)
+
+        # Wheel capsule (rounded rectangle)
+        wheel_w = size * 0.12
+        wheel_h = size * 0.22
+        wheel_bbox = (
+            I(cx - wheel_w / 2),
+            I(top + (bottom - top) * 0.24),
+            I(cx + wheel_w / 2),
+            I(top + (bottom - top) * 0.24 + wheel_h),
         )
-
-        # --- Jiggle lines (minimal) ---
-        w = max(1, int(size*0.05))
-        # left jiggle
-        d.arc((size*0.12, size*0.24, size*0.32, size*0.44), start=300, end=60, fill=white, width=w)
-        d.arc((size*0.08, size*0.18, size*0.34, size*0.50), start=300, end=60, fill=white, width=w)
-
-        # right jiggle
-        d.arc((size*0.68, size*0.24, size*0.88, size*0.44), start=120, end=240, fill=white, width=w)
-        d.arc((size*0.66, size*0.18, size*0.92, size*0.50), start=120, end=240, fill=white, width=w)
+        d.rounded_rectangle(wheel_bbox, radius=I(wheel_w * 0.45), outline=white, width=thin)
 
         return img
         
@@ -186,7 +226,6 @@ class MouseJigglerApp:
     def run_tray(self):
         menu = pystray.Menu(
             pystray.MenuItem("Start", self.start),
-            pystray.MenuItem("Stop", self.stop),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self.quit),
         )
